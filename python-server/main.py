@@ -7,6 +7,10 @@ import tempfile
 import json
 from fastapi import FastAPI, UploadFile, File
 from fastapi.responses import JSONResponse
+from dotenv import load_dotenv
+
+# Load environment variables from a .env file if present
+load_dotenv()
 # Remove PyPDF2 import, not needed for new workflow
 
 # Import the new TOC extraction logic
@@ -16,6 +20,8 @@ app = FastAPI()
 
 # Read Gemini API key from env var, fallback to empty string if not set
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+# Allow overriding the Java headings service URL via env var for local runs
+JAVA_HEADINGS_URL = os.environ.get("JAVA_HEADINGS_URL", "http://localhost:8080/get/pdf-info/detect-chapter-headings")
 
 # This is a fallback parser if Gemini returns markdown instead of JSON
 def parse_chapter_list(text_response):
@@ -52,7 +58,7 @@ async def get_toc_from_new_logic(pdf_path: str):
 
 
 def get_java_headings(pdf_path):
-    url = "https://dependable-expression-production-3af1.up.railway.app/get/pdf-info/detect-chapter-headings"
+    url = JAVA_HEADINGS_URL
     with open(pdf_path, "rb") as f:
         files = {"file": f}
         try:
