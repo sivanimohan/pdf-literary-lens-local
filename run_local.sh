@@ -3,6 +3,12 @@ set -euo pipefail
 
 # Usage: ./run_local.sh "/path/to/Your PDF.pdf"
 
+SKIP_JAVA_BUILD=${SKIP_JAVA_BUILD:-0}
+if [ "${1:-}" = "--skip-java" ]; then
+  SKIP_JAVA_BUILD=1
+  shift
+fi
+
 PDF_PATH="$1"
 
 if [ -z "${PDF_PATH}" ]; then
@@ -38,6 +44,18 @@ if [ -f "${ROOT_DIR}/.env" ]; then
   set +a
 fi
 
+# Print confirmation that critical env vars were loaded (do not print secrets)
+if [ -n "${GEMINI_API_KEY:-}" ]; then
+  echo "GEMINI_API_KEY present: yes"
+else
+  echo "GEMINI_API_KEY present: no"
+fi
+if [ -n "${JAVA_HEADINGS_URL:-}" ]; then
+  echo "JAVA_HEADINGS_URL: ${JAVA_HEADINGS_URL}"
+else
+  echo "JAVA_HEADINGS_URL: not set"
+fi
+
 echo "Setting up Python virtual environment..."
 cd "${ROOT_DIR}/python-server"
 PY_VENV_DIR=".venv"
@@ -53,7 +71,6 @@ cd "${ROOT_DIR}"
 
 # Ensure a JDK 17 is active. If current `java` is older, try to locate an installed JDK17 and switch to it.
 JAVA_MAJOR=$(java -version 2>&1 | awk -F[\"._] 'NR==1{print $2}') || true
-SKIP_JAVA_BUILD=0
 JDK17_DIR=""
 if [ -z "${JAVA_MAJOR}" ] || [ "${JAVA_MAJOR}" -lt 17 ]; then
   echo "Current java major version is ${JAVA_MAJOR:-unknown} (<17). Attempting to locate JDK 17 on the system..."
@@ -131,9 +148,14 @@ fi
 
 echo "Starting Python FastAPI server (background)"
 cd "${ROOT_DIR}/python-server"
+## Ensure any previous python server is stopped so new env vars take effect
+pkill -f 'uvicorn' || true
 nohup ${PY_VENV_DIR}/bin/uvicorn main:app --host 0.0.0.0 --port 8000 > python.log 2>&1 &
 PY_PID=$!
 echo "Python PID: ${PY_PID} (logs: ${ROOT_DIR}/python-server/python.log)"
+
+# Cleanup trap to stop background servers on script exit
+trap 'echo "Stopping background servers..."; [ -n "${JAVA_PID:-}" ] && kill ${JAVA_PID} 2>/dev/null || true; [ -n "${PY_PID:-}" ] && kill ${PY_PID} 2>/dev/null || true' EXIT
 
 # Wait for services to be ready
 echo "Waiting for Java (port 8080) and Python (port 8000) to be available..."
