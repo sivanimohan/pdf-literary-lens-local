@@ -11,6 +11,15 @@ from dotenv import load_dotenv
 
 # Load environment variables from a .env file if present
 load_dotenv()
+import sys
+try:
+    # Ensure stdout/stderr use UTF-8 on Windows consoles to avoid UnicodeEncodeError
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
 # Remove PyPDF2 import, not needed for new workflow
 
 # Import the new TOC extraction logic

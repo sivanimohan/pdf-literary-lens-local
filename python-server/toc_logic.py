@@ -9,9 +9,19 @@ from typing import Optional, List
 # --- Library Check ---
 try:
     import google.generativeai as genai
-    from pdf2image import convert_from_path
     from pydantic import BaseModel
-    print("✅ Pre-flight check passed. All libraries are correctly imported.")
+    # pdf2image is optional when PyMuPDF fallback is available
+    try:
+        from pdf2image import convert_from_path
+    except Exception:
+        convert_from_path = None
+    # Try optional PyMuPDF fallback
+    try:
+        import fitz  # PyMuPDF
+    except Exception:
+        fitz = None
+
+    print("✅ Pre-flight check passed. Core libraries imported (pdf2image/fitz availability may vary).")
 except ImportError as e:
     print(f"\n--- ❌ CRITICAL ERROR: A required library failed to import: {e} ---")
     sys.exit()
@@ -129,11 +139,46 @@ async def process_pdf(pdf_path: str):
     output_dir.mkdir(exist_ok=True)
     # Clean up old images before conversion
     for old_image in output_dir.glob("*.jpg"):
-        old_image.unlink()
+        try:
+            old_image.unlink()
+        except Exception:
+            pass
 
-    images = convert_from_path(pdf_path, last_page=20, fmt='jpeg', output_folder=output_dir, output_file="page_")
-    image_paths = sorted([str(p) for p in output_dir.glob("*.jpg")])
-    print(f"Successfully converted {len(image_paths)} pages.")
+    # Helper: try pdf2image (pdftoppm) first, fallback to PyMuPDF (fitz)
+    def _render_with_pymupdf(pdf_path_local: str, out_dir: Path, max_pages: int = 20):
+        if fitz is None:
+            raise RuntimeError("PyMuPDF (fitz) is not available for fallback rendering")
+        doc = fitz.open(pdf_path_local)
+        rendered = []
+        for page_index in range(min(max_pages, doc.page_count)):
+            page = doc.load_page(page_index)
+            pix = page.get_pixmap(dpi=150)
+            out_path = out_dir / f"page_{page_index+1:03d}.jpg"
+            pix.save(str(out_path))
+            rendered.append(str(out_path))
+        return rendered
+
+    image_paths = []
+    # Prefer pdf2image if convert_from_path is available and pdftoppm is on PATH
+    import shutil
+    use_pdf2image = convert_from_path is not None and shutil.which("pdftoppm")
+    try:
+        if use_pdf2image:
+            images = convert_from_path(pdf_path, last_page=20, fmt='jpeg', output_folder=output_dir, output_file="page_")
+            image_paths = sorted([str(p) for p in output_dir.glob("*.jpg")])
+            print(f"Successfully converted {len(image_paths)} pages using pdf2image/pdftoppm.")
+        else:
+            # Attempt PyMuPDF fallback
+            print("pdftoppm not available: attempting PyMuPDF fallback (if installed)...")
+            image_paths = _render_with_pymupdf(pdf_path, output_dir, max_pages=20)
+            print(f"Successfully rendered {len(image_paths)} pages using PyMuPDF fallback.")
+    except Exception as e:
+        print(f"[ERROR] Failed to convert/render PDF pages to images: {e}")
+        if not use_pdf2image:
+            print("[HINT] Install PyMuPDF with: python -m pip install pymupdf or install Poppler and ensure pdftoppm is on PATH.")
+        else:
+            print("[HINT] Is poppler installed and its `bin` folder added to PATH? See https://github.com/Belval/pdf2image#installing-poppler-on-windows")
+        return None
 
     # --- Pass 1: Discovery Pass with Flash Model ---
     print("\n--- Starting Pass 1: Discovery (using gemini-2.5-flash) ---")

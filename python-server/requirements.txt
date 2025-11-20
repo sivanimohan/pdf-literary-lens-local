@@ -9,3 +9,12 @@ pdf2image
 reportlab
 pillow
 pydantic
+
+# Optional fallback renderer when Poppler/pdftoppm is not available on the system
+# PyMuPDF (fitz) can render PDF pages to images without system dependencies.
+pymupdf
+
+# Note: `pdf2image` requires the Poppler utilities (pdftoppm/pdftotext) to be
+# available on the system. On Windows install Poppler via Chocolatey:
+#   choco install poppler -y
+# Or download a Windows build and add its `bin` directory to PATH.

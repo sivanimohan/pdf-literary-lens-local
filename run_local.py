@@ -3,19 +3,19 @@
 Python replacement for `run_local.sh`.
 - Loads environment variables from `.env` (if present)
 - Optionally installs system packages on Linux (best-effort)
-- Creates/activates a Python venv in `python-server/.venv` and installs requirements
+- Uses the current Python environment (no virtualenv creation or modification)
 - Optionally builds and starts the Java server with Maven (unless --skip-java)
-- Starts the Python FastAPI server using the venv's Python/uvicorn
+- Starts the Python FastAPI server using the running Python/uvicorn
 - Waits for services to become ready and POSTs the provided PDF to `/process-pdf`
 
 Usage:
-    python run_local.py [--skip-java] "/path/to/Your PDF.pdf"
+        python run_local.py [--skip-java] "/path/to/Your PDF.pdf"
 
 Notes:
 - This script tries to be cross-platform but system package installation and JDK
-  selection are only supported on Linux with apt/update-alternatives.
+    selection are only supported on Linux with apt/update-alternatives.
 - It will attempt to stop prior uvicorn processes on POSIX systems before starting
-  a new Python server (uses `pkill -f uvicorn` when available).
+    a new Python server (uses `pkill -f uvicorn` when available).
 """
 
 import argparse
@@ -101,93 +101,16 @@ def try_system_installs():
 
 
 def create_venv_and_install_requirements(venv_override: str = None):
-    """Ensure venv exists and install Python requirements into it."""
-    # Allow caller to override the venv location (useful if user created venv elsewhere)
-    venv_dir = VENV_DIR if venv_override is None else Path(venv_override)
-    if not venv_dir.exists():
-        print("Creating virtual environment at:", venv_dir)
-        # Primary attempt: use the same Python interpreter that runs this script
-        subprocess.check_call([sys.executable, "-m", "venv", str(venv_dir)])
+    """Install Python requirements into the current interpreter.
 
-    # Sometimes on Windows security software can remove the created python executable
-    # immediately. Try a few short retries to allow the file to appear.
-    def _locate_venv_python_search(dir_path: Path):
-        possible = []
-        if os.name == 'nt':
-            possible += [dir_path / 'Scripts' / 'python.exe', dir_path / 'bin' / 'python.exe']
-        else:
-            possible += [dir_path / 'bin' / 'python', dir_path / 'Scripts' / 'python']
-        possible += list(dir_path.glob('**/python*'))
-        for p in possible:
-            try:
-                if p.exists() and os.access(str(p), os.X_OK):
-                    return p
-            except Exception:
-                continue
-        return None
+    This project does not create or manage virtual environments automatically.
+    Instead, if a `requirements.txt` file exists (prefer `python-server/requirements.txt`),
+    this function will attempt to install the listed packages into the currently
+    running Python environment using `python -m pip install -r ...`.
 
-    py_exec = None
-    # quick retries (0.5s interval) to allow AV or FS delay
-    for _ in range(6):
-        py_exec = _locate_venv_python_search(venv_dir)
-        if py_exec:
-            break
-        time.sleep(0.5)
-
-    # If still not found on Windows, try creating venv via the py launcher if available
-    if not py_exec and os.name == 'nt' and shutil.which('py'):
-        try:
-            print('Attempting to create venv using the Windows py launcher (py -3 -m venv)')
-            subprocess.check_call(['py', '-3', '-m', 'venv', str(venv_dir)])
-            # retry locate
-            for _ in range(6):
-                py_exec = _locate_venv_python_search(venv_dir)
-                if py_exec:
-                    break
-                time.sleep(0.5)
-        except Exception:
-            pass
-
-    if not py_exec:
-        raise RuntimeError(
-            "Failed to find virtualenv python executable in: {}\n".format(venv_dir) +
-            "This commonly happens on Windows when security software removes the executable immediately after venv creation.\n" +
-            "Options:\n" +
-            "  1) Create the venv manually and install requirements, then run with --venv-path.\n" +
-            "     Example (PowerShell/cmd):\n" +
-            "       python -m venv {}\n".format(venv_dir) +
-            "       {}\\Scripts\\activate (or use the py launcher)\n".format(venv_dir) +
-            "       python -m pip install --upgrade pip\n" +
-            "       python -m pip install -r python-server\\requirements.txt\n" +
-            "  2) Temporarily whitelist the project folder in Windows Defender / AV and retry.\n"
-        )
-    # Locate the python executable inside the venv. Different systems place it
-    # in different locations; be tolerant and search common locations.
-    possible = []
-    if os.name == 'nt':
-        possible += [venv_dir / 'Scripts' / 'python.exe', venv_dir / 'bin' / 'python.exe']
-    else:
-        possible += [venv_dir / 'bin' / 'python', venv_dir / 'Scripts' / 'python']
-    # fallback: glob for any python executable under venv
-    possible += list(venv_dir.glob('**/python*'))
-
-    py_exec = None
-    for p in possible:
-        try:
-            if p.exists() and os.access(str(p), os.X_OK):
-                py_exec = p
-                break
-        except Exception:
-            continue
-
-    if not py_exec:
-        raise RuntimeError("Failed to find virtualenv python executable in: {}\n" \
-                           "If antivirus or system protection removed the file, please create a venv manually:\n" \
-                           "python -m venv {} and install requirements inside it.".format(venv_dir, venv_dir))
-
-    # Use the venv's python to run pip to avoid Windows pip upgrade/permission issues
-    # Upgrade pip and install requirements
-    run_cmd([str(py_exec), "-m", "pip", "install", "--upgrade", "pip"])  # may print but raise on failure
+    Returns the path to the Python executable used to run child processes.
+    """
+    print("Using current Python interpreter:", sys.executable)
 
     # Locate requirements.txt: prefer python-server/requirements.txt but also accept project root
     candidates = [PY_SERVER_DIR / 'requirements.txt', ROOT / 'requirements.txt']
@@ -196,15 +119,29 @@ def create_venv_and_install_requirements(venv_override: str = None):
         if c.exists():
             reqs = c
             break
-    if reqs:
-        run_cmd([str(py_exec), "-m", "pip", "install", "-r", str(reqs)])
-    else:
-        print("No requirements.txt found in expected locations:")
-        for c in candidates:
-            print(" -", c)
-        print("If you have a requirements file elsewhere, please provide it or install dependencies manually.")
 
-    return str(py_exec)
+    if not reqs:
+        print("No requirements.txt found in expected locations.")
+        return sys.executable
+
+    print("Found requirements file:", reqs)
+    # Try to upgrade pip first (best-effort)
+    try:
+        print("Upgrading pip (best-effort)...")
+        run_cmd([sys.executable, "-m", "pip", "install", "--upgrade", "pip"])
+    except Exception as e:
+        print("Warning: failed to upgrade pip (continuing):", e)
+
+    # Install requirements
+    try:
+        print("Installing Python dependencies from:", reqs)
+        run_cmd([sys.executable, "-m", "pip", "install", "-r", str(reqs)])
+    except Exception as e:
+        print("Failed to install requirements:", e)
+        print("You can install them manually with:")
+        print("  python -m pip install -r", reqs)
+
+    return sys.executable
 
 
 def find_jdk17():
@@ -389,15 +326,8 @@ def main():
     # Try system installs if on linux
     try_system_installs()
 
-    # Create venv and install requirements (allow override). If --skip-venv set,
-    # do not attempt to create or modify a venv (caller must provide --venv-path).
-    if args.skip_venv:
-        if not args.venv_path:
-            print('Error: --skip-venv requires --venv-path to point to an existing virtualenv')
-            sys.exit(2)
-        venv_python = create_venv_and_install_requirements(venv_override=args.venv_path)
-    else:
-        venv_python = create_venv_and_install_requirements(venv_override=args.venv_path)
+    # Use the current Python environment; virtualenv creation/management is disabled.
+    venv_python = create_venv_and_install_requirements(venv_override=args.venv_path)
 
     # Build Java if needed
     jar = None
@@ -411,6 +341,11 @@ def main():
 
     # Ensure cleanup
     atexit.register(lambda: (stop_python_server(), stop_java_server()))
+
+    # Ensure Python child processes use UTF-8 on Windows to avoid encoding errors
+    # when modules print unicode characters (e.g., emojis) to stdout.
+    os.environ.setdefault('PYTHONUTF8', '1')
+    os.environ.setdefault('PYTHONIOENCODING', 'utf-8')
 
     # Start Python server
     py_proc = start_python_server(venv_python)
