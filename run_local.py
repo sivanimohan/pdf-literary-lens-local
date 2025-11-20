@@ -100,22 +100,110 @@ def try_system_installs():
         print("System install attempted but failed:", e)
 
 
-def create_venv_and_install_requirements():
+def create_venv_and_install_requirements(venv_override: str = None):
     """Ensure venv exists and install Python requirements into it."""
-    if not VENV_DIR.exists():
-        print("Creating virtual environment at:", VENV_DIR)
-        subprocess.check_call([sys.executable, "-m", "venv", str(VENV_DIR)])
-    py_exec = VENV_DIR / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-    pip_exec = VENV_DIR / ("Scripts/pip.exe" if os.name == "nt" else "bin/pip")
-    if not py_exec.exists():
-        raise RuntimeError("Failed to create virtualenv python at {}".format(py_exec))
-    # Upgrade pip and install requirements
-    run_cmd([str(pip_exec), "install", "--upgrade", "pip"])  # no check to fail hard
-    reqs = PY_SERVER_DIR / "requirements.txt"
-    if reqs.exists():
-        run_cmd([str(pip_exec), "install", "-r", str(reqs)])
+    # Allow caller to override the venv location (useful if user created venv elsewhere)
+    venv_dir = VENV_DIR if venv_override is None else Path(venv_override)
+    if not venv_dir.exists():
+        print("Creating virtual environment at:", venv_dir)
+        # Primary attempt: use the same Python interpreter that runs this script
+        subprocess.check_call([sys.executable, "-m", "venv", str(venv_dir)])
+
+    # Sometimes on Windows security software can remove the created python executable
+    # immediately. Try a few short retries to allow the file to appear.
+    def _locate_venv_python_search(dir_path: Path):
+        possible = []
+        if os.name == 'nt':
+            possible += [dir_path / 'Scripts' / 'python.exe', dir_path / 'bin' / 'python.exe']
+        else:
+            possible += [dir_path / 'bin' / 'python', dir_path / 'Scripts' / 'python']
+        possible += list(dir_path.glob('**/python*'))
+        for p in possible:
+            try:
+                if p.exists() and os.access(str(p), os.X_OK):
+                    return p
+            except Exception:
+                continue
+        return None
+
+    py_exec = None
+    # quick retries (0.5s interval) to allow AV or FS delay
+    for _ in range(6):
+        py_exec = _locate_venv_python_search(venv_dir)
+        if py_exec:
+            break
+        time.sleep(0.5)
+
+    # If still not found on Windows, try creating venv via the py launcher if available
+    if not py_exec and os.name == 'nt' and shutil.which('py'):
+        try:
+            print('Attempting to create venv using the Windows py launcher (py -3 -m venv)')
+            subprocess.check_call(['py', '-3', '-m', 'venv', str(venv_dir)])
+            # retry locate
+            for _ in range(6):
+                py_exec = _locate_venv_python_search(venv_dir)
+                if py_exec:
+                    break
+                time.sleep(0.5)
+        except Exception:
+            pass
+
+    if not py_exec:
+        raise RuntimeError(
+            "Failed to find virtualenv python executable in: {}\n".format(venv_dir) +
+            "This commonly happens on Windows when security software removes the executable immediately after venv creation.\n" +
+            "Options:\n" +
+            "  1) Create the venv manually and install requirements, then run with --venv-path.\n" +
+            "     Example (PowerShell/cmd):\n" +
+            "       python -m venv {}\n".format(venv_dir) +
+            "       {}\\Scripts\\activate (or use the py launcher)\n".format(venv_dir) +
+            "       python -m pip install --upgrade pip\n" +
+            "       python -m pip install -r python-server\\requirements.txt\n" +
+            "  2) Temporarily whitelist the project folder in Windows Defender / AV and retry.\n"
+        )
+    # Locate the python executable inside the venv. Different systems place it
+    # in different locations; be tolerant and search common locations.
+    possible = []
+    if os.name == 'nt':
+        possible += [venv_dir / 'Scripts' / 'python.exe', venv_dir / 'bin' / 'python.exe']
     else:
-        print("No requirements.txt found at", reqs)
+        possible += [venv_dir / 'bin' / 'python', venv_dir / 'Scripts' / 'python']
+    # fallback: glob for any python executable under venv
+    possible += list(venv_dir.glob('**/python*'))
+
+    py_exec = None
+    for p in possible:
+        try:
+            if p.exists() and os.access(str(p), os.X_OK):
+                py_exec = p
+                break
+        except Exception:
+            continue
+
+    if not py_exec:
+        raise RuntimeError("Failed to find virtualenv python executable in: {}\n" \
+                           "If antivirus or system protection removed the file, please create a venv manually:\n" \
+                           "python -m venv {} and install requirements inside it.".format(venv_dir, venv_dir))
+
+    # Use the venv's python to run pip to avoid Windows pip upgrade/permission issues
+    # Upgrade pip and install requirements
+    run_cmd([str(py_exec), "-m", "pip", "install", "--upgrade", "pip"])  # may print but raise on failure
+
+    # Locate requirements.txt: prefer python-server/requirements.txt but also accept project root
+    candidates = [PY_SERVER_DIR / 'requirements.txt', ROOT / 'requirements.txt']
+    reqs = None
+    for c in candidates:
+        if c.exists():
+            reqs = c
+            break
+    if reqs:
+        run_cmd([str(py_exec), "-m", "pip", "install", "-r", str(reqs)])
+    else:
+        print("No requirements.txt found in expected locations:")
+        for c in candidates:
+            print(" -", c)
+        print("If you have a requirements file elsewhere, please provide it or install dependencies manually.")
+
     return str(py_exec)
 
 
@@ -276,6 +364,8 @@ def post_pdf_and_save(pdf_path: Path, out_file: Path):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--skip-java', action='store_true', help='Skip building/starting local Java server')
+    parser.add_argument('--venv-path', help='Path to an existing or new virtualenv to use (overrides python-server/.venv)')
+    parser.add_argument('--skip-venv', action='store_true', help='Do not create or modify a virtualenv; use an existing venv via --venv-path')
     parser.add_argument('pdf', help='Path to PDF file')
     args = parser.parse_args()
 
@@ -299,8 +389,15 @@ def main():
     # Try system installs if on linux
     try_system_installs()
 
-    # Create venv and install requirements
-    venv_python = create_venv_and_install_requirements()
+    # Create venv and install requirements (allow override). If --skip-venv set,
+    # do not attempt to create or modify a venv (caller must provide --venv-path).
+    if args.skip_venv:
+        if not args.venv_path:
+            print('Error: --skip-venv requires --venv-path to point to an existing virtualenv')
+            sys.exit(2)
+        venv_python = create_venv_and_install_requirements(venv_override=args.venv_path)
+    else:
+        venv_python = create_venv_and_install_requirements(venv_override=args.venv_path)
 
     # Build Java if needed
     jar = None
