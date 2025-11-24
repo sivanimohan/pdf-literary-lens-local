@@ -89,17 +89,16 @@ def match_toc_with_java_headings_gemini(toc, java_headings, book_title):
     url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + GEMINI_API_KEY
 
     # --- IMPORTANT CHANGE ---
-    # Reformat the TOC to remove page numbers and other extra fields
-    # before sending it to the final matching prompt.
+    # Reformat the TOC to remove page numbers and any numeric fields
+    # before sending it to the final matching prompt. Only send chapter titles.
     print("[DEBUG] Raw TOC passed to final matching step:", toc)
     formatted_toc_for_prompt = [
         {
-            "chapter_title": entry.get("chapter_title"),
-            "chapter_number": entry.get("chapter_number")
+            "chapter_title": entry.get("chapter_title")
         }
         for entry in toc
     ]
-    print("[DEBUG] Formatted TOC for final prompt (should NOT include page_number):", formatted_toc_for_prompt)
+    print("[DEBUG] Formatted TOC for final prompt (ONLY chapter titles):", formatted_toc_for_prompt)
 
     prompt = (
         f"You are an expert data-cleaning and text-matching AI. Your task is to create a final, accurate Table of Contents (TOC) for the book '{book_title}'.\n\n"
