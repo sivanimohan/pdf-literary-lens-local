@@ -7,19 +7,6 @@ import tempfile
 import json
 from fastapi import FastAPI, UploadFile, File
 from fastapi.responses import JSONResponse
-from dotenv import load_dotenv
-
-# Load environment variables from a .env file if present
-load_dotenv()
-import sys
-try:
-    # Ensure stdout/stderr use UTF-8 on Windows consoles to avoid UnicodeEncodeError
-    if hasattr(sys.stdout, "reconfigure"):
-        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    if hasattr(sys.stderr, "reconfigure"):
-        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
-except Exception:
-    pass
 # Remove PyPDF2 import, not needed for new workflow
 
 # Import the new TOC extraction logic
@@ -29,8 +16,6 @@ app = FastAPI()
 
 # Read Gemini API key from env var, fallback to empty string if not set
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
-# Allow overriding the Java headings service URL via env var for local runs
-JAVA_HEADINGS_URL = os.environ.get("JAVA_HEADINGS_URL", "http://localhost:8080/get/pdf-info/detect-chapter-headings")
 
 # This is a fallback parser if Gemini returns markdown instead of JSON
 def parse_chapter_list(text_response):
@@ -67,7 +52,7 @@ async def get_toc_from_new_logic(pdf_path: str):
 
 
 def get_java_headings(pdf_path):
-    url = JAVA_HEADINGS_URL
+    url = "https://dependable-expression-production-3af1.up.railway.app/get/pdf-info/detect-chapter-headings"
     with open(pdf_path, "rb") as f:
         files = {"file": f}
         try:
@@ -89,16 +74,17 @@ def match_toc_with_java_headings_gemini(toc, java_headings, book_title):
     url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + GEMINI_API_KEY
 
     # --- IMPORTANT CHANGE ---
-    # Reformat the TOC to remove page numbers and any numeric fields
-    # before sending it to the final matching prompt. Only send chapter titles.
+    # Reformat the TOC to remove page numbers and other extra fields
+    # before sending it to the final matching prompt.
     print("[DEBUG] Raw TOC passed to final matching step:", toc)
+    # Only include chapter titles in the prompt. Do NOT pass any page numbers.
     formatted_toc_for_prompt = [
         {
             "chapter_title": entry.get("chapter_title")
         }
         for entry in toc
     ]
-    print("[DEBUG] Formatted TOC for final prompt (ONLY chapter titles):", formatted_toc_for_prompt)
+    print("[DEBUG] Formatted TOC for final prompt (page numbers removed):", formatted_toc_for_prompt)
 
     prompt = (
         f"You are an expert data-cleaning and text-matching AI. Your task is to create a final, accurate Table of Contents (TOC) for the book '{book_title}'.\n\n"

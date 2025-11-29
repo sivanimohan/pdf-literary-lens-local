@@ -129,6 +129,8 @@ def create_venv_and_install_requirements(venv_override: str = None):
     try:
         print("Upgrading pip (best-effort)...")
         run_cmd([sys.executable, "-m", "pip", "install", "--upgrade", "pip"])
+    except KeyboardInterrupt:
+        print("Warning: pip upgrade cancelled by user (continuing)")
     except Exception as e:
         print("Warning: failed to upgrade pip (continuing):", e)
 
@@ -136,6 +138,10 @@ def create_venv_and_install_requirements(venv_override: str = None):
     try:
         print("Installing Python dependencies from:", reqs)
         run_cmd([sys.executable, "-m", "pip", "install", "-r", str(reqs)])
+    except KeyboardInterrupt:
+        print("Warning: pip install cancelled by user (continuing). You may need to install requirements manually.")
+        print("You can install them manually with:")
+        print("  python -m pip install -r", reqs)
     except Exception as e:
         print("Failed to install requirements:", e)
         print("You can install them manually with:")
@@ -182,8 +188,27 @@ def build_java_if_needed(skip_java: bool):
     jdk = find_jdk17()
     if not jdk:
         print("JDK 17 not found automatically; proceeding but build may fail")
-    # Run mvn -DskipTests clean package
-    run_cmd([mvn, "-DskipTests", "clean", "package"], cwd=ROOT)
+    # Run mvn -DskipTests clean package and capture output so failures are logged
+    try:
+        print("Running Maven build: mvn -DskipTests clean package")
+        run_cmd([mvn, "-DskipTests", "clean", "package"], cwd=ROOT, capture_output=True)
+    except subprocess.CalledProcessError as e:
+        # Try to print whatever output we captured to help debugging
+        try:
+            out = e.stdout.decode('utf-8', errors='replace') if e.stdout else ''
+            err = e.stderr.decode('utf-8', errors='replace') if e.stderr else ''
+            print("Maven build failed with non-zero exit status:")
+            if out:
+                print("--- maven stdout ---")
+                print(out)
+            if err:
+                print("--- maven stderr ---")
+                print(err)
+        except Exception:
+            print("Maven build failed (unable to decode output).")
+        print("Proceeding without local Java build. If you want to debug further, run:")
+        print("  mvn -DskipTests clean package  # run in project root and inspect output")
+        return None
     # Find jar
     jars = glob.glob(str(ROOT / "target" / "*.jar"))
     # Prefer the repackaged spring-boot jar (not .original)
